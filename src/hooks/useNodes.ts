@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { BackendPool } from '../api/pool'
-import { dynamicSummaryMulti, kvGetMulti, listAgentUuids, staticDataMulti } from '../api/methods'
+import { dynamicSummaryMulti } from '../api/methods'
+import { httpRpcCall } from '../api/client'
 import { isOnline } from '../utils/status'
-import type { DynamicSummary, HistorySample, Node, NodeMeta, SiteConfig } from '../types'
+import type { DynamicSummary, HistorySample, Node, NodeMeta, SiteConfig, StaticData } from '../types'
 
 type Agent = Pick<Node, 'uuid' | 'source' | 'meta' | 'static'>
 
@@ -131,11 +132,25 @@ export function useNodes(config: SiteConfig | null) {
     const sourceUuids = new Map<string, string[]>()
 
     const bootstrap = async () => {
-      const agentsRes = await pool.fanout(listAgentUuids)
-      setErrors(prev => [...prev, ...agentsRes.errors])
+      // HTTP POST 复用页面已有 HTTPS 连接，省掉 WSS TLS 握手
+      const uuidList: { source: string; rows: string[] }[] = []
+      const uuidErrors: { source: string; error: unknown }[] = []
+      await Promise.allSettled(
+        pool.entries.map(async entry => {
+          try {
+            const res = await httpRpcCall<{ uuids?: string[] }>(
+              entry.client.url, entry.client.token, 'nodeget-server_list_all_agent_uuid', {},
+            )
+            uuidList.push({ source: entry.name, rows: res?.uuids || [] })
+          } catch (e) {
+            uuidErrors.push({ source: entry.name, error: e })
+          }
+        }),
+      )
+      setErrors(prev => [...prev, ...uuidErrors])
 
       const seed = new Map<string, Agent>()
-      for (const { source, rows } of agentsRes.ok) {
+      for (const { source, rows } of uuidList) {
         const uuids = rows ?? []
         sourceUuids.set(source, uuids)
         for (const uuid of uuids) seed.set(uuid, blankAgent(uuid, source))
@@ -147,10 +162,18 @@ export function useNodes(config: SiteConfig | null) {
           const uuids = sourceUuids.get(entry.name) || []
           if (!uuids.length) return
 
+          const { url, token, name } = entry.client
           const kvItems = uuids.flatMap(u => META_KEYS.map(k => ({ namespace: u, key: k })))
-          const [meta, stat] = await Promise.allSettled([
-            kvGetMulti(entry.client, kvItems),
-            staticDataMulti(entry.client, uuids, STATIC_FIELDS),
+          const [meta, stat, dyn] = await Promise.allSettled([
+            httpRpcCall<{ namespace: string; key: string; value: unknown }[]>(
+              url, token, 'kv_get_multi_value', { namespace_key: kvItems },
+            ),
+            httpRpcCall<StaticData[]>(
+              url, token, 'agent_static_data_multi_last_query', { uuids, fields: STATIC_FIELDS },
+            ),
+            httpRpcCall<DynamicSummary[]>(
+              url, token, 'agent_dynamic_summary_multi_last_query', { uuids, fields: DYNAMIC_FIELDS },
+            ),
           ])
 
           setAgents(prev => {
@@ -165,7 +188,7 @@ export function useNodes(config: SiteConfig | null) {
                 bucket[row.key] = row.value
               }
               for (const uuid of uuids) {
-                const cur = next.get(uuid) ?? blankAgent(uuid, entry.name)
+                const cur = next.get(uuid) ?? blankAgent(uuid, name)
                 next.set(uuid, { ...cur, meta: parseMeta(grouped.get(uuid) ?? {}) })
               }
             }
@@ -173,16 +196,33 @@ export function useNodes(config: SiteConfig | null) {
             if (stat.status === 'fulfilled' && stat.value) {
               for (const row of stat.value) {
                 if (!row.uuid) continue
-                const cur = next.get(row.uuid) ?? blankAgent(row.uuid, entry.name)
+                const cur = next.get(row.uuid) ?? blankAgent(row.uuid, name)
                 next.set(row.uuid, { ...cur, static: row })
               }
             }
             return next
           })
+
+          if (dyn.status === 'fulfilled' && dyn.value) {
+            setLive(prev => {
+              const next = new Map(prev)
+              for (const row of dyn.value) next.set(row.uuid, row)
+              return next
+            })
+            setHistory(prev => {
+              const next = new Map(prev)
+              for (const row of dyn.value) {
+                const arr = next.get(row.uuid) || []
+                const sample = sampleFrom(row)
+                const dedup = arr.length && arr[arr.length - 1].t === sample.t ? arr : arr.concat(sample)
+                next.set(row.uuid, dedup.slice(-HISTORY_LIMIT))
+              }
+              return next
+            })
+          }
         }),
       )
 
-      await tickDynamic()
       setLoading(false)
     }
 

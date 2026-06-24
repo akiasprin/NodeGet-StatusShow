@@ -22,9 +22,9 @@ interface Pending {
 }
 
 export class RpcClient {
-  private url: string
-  private token: string
-  private name: string
+  readonly url: string
+  readonly token: string
+  readonly name: string
   private ws: WebSocket | null = null
   private pending = new Map<string, Pending>()
   private outbox: string[] = []
@@ -155,5 +155,36 @@ export class RpcClient {
     this.outbox = []
     this.ws?.close()
     this.ws = null
+  }
+}
+
+export async function httpRpcCall<T = unknown>(
+  wssUrl: string,
+  token: string,
+  method: string,
+  params: Record<string, unknown> = {},
+  timeout = CALL_TIMEOUT_MS,
+): Promise<T> {
+  const httpUrl = wssUrl.replace(/^wss:/, 'https:').replace(/\/ws$/, '')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+  try {
+    const res = await fetch(httpUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method,
+        params: { token, ...params },
+        id: 1,
+      }),
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    if (data.error) throw new Error(data.error.message || 'rpc error')
+    return data.result as T
+  } finally {
+    clearTimeout(timer)
   }
 }
