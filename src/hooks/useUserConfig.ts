@@ -8,8 +8,11 @@ export function useUserConfig() {
   useEffect(() => {
     let alive = true
     if(!import.meta.env.DEV){
-      const rand = Date.now() + '-' + crypto.randomUUID().replaceAll(/-/g, "").slice(10)
-      fetch('config.json?' + rand, { cache: 'no-cache' })
+      if (window.__config_p__) {
+        window.__config_p__.then(c => { c && alive && setConfig(c) }).catch(e => alive && setError(e instanceof Error ? e : new Error(String(e))))
+        return
+      }
+      fetch('config.json', { cache: 'no-cache' })
         .then(r => {
           if (!r.ok) throw new Error(`config.json ${r.status}`)
           return r.json() as Promise<UserConfig>

@@ -116,7 +116,6 @@ export class RpcClient {
     params: Record<string, unknown> = {},
     timeout = CALL_TIMEOUT_MS,
   ): Promise<T> {
-    await this.opened
     const id = nextId()
     const payload = JSON.stringify({
       jsonrpc: '2.0',

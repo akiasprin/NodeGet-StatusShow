@@ -7,6 +7,14 @@
     <link rel="icon" type="image/png" href="./logo.png" />
     <title>NodeGet - StatusShow</title>
     <script>
+      window.__config_p__ = fetch('config.json', { cache: 'no-cache' })
+        .then(function(res) { return res.ok ? res.json() : Promise.reject(res.status) })
+        .catch(function(e) { console.warn('config.json prefetch failed:', e) })
+      window.__theme_p__ = fetch('nodeget-theme.json', { cache: 'no-cache' })
+        .then(function(res) { return res.ok ? res.json() : Promise.reject(res.status) })
+        .catch(function(e) { console.warn('nodeget-theme.json prefetch failed:', e) })
+    </script>
+    <script>
       try {
         var t = localStorage.getItem('nodeget.theme')
         if (t !== 'light') {
