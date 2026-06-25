@@ -158,13 +158,13 @@ export class RpcClient {
 }
 
 export async function httpRpcCall<T = unknown>(
-  wssUrl: string,
+  wsUrl: string,
   token: string,
   method: string,
   params: Record<string, unknown> = {},
   timeout = CALL_TIMEOUT_MS,
 ): Promise<T> {
-  const httpUrl = wssUrl.replace(/^wss:/, 'https:').replace(/\/ws$/, '')
+  const httpUrl = wsUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeout)
   try {
