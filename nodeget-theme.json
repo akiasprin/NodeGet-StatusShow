@@ -1,9 +1,9 @@
 {
-  "name": "NodeGet Basic Theme",
-  "short": "NodeGetBasic",
-  "description": "NodeGet Basic Theme - a boilerplate for custom themes",
+  "name": "NodeGetBasicR2",
+  "short": "NodeGetBasicR2",
+  "description": "NodeGetBasicR2 - updated status show theme",
   "author": "NodeSeekDev",
-  "repository": "https://github.com/NodeSeekDev/NodeGet-StatusShow",
+  "repository": "https://github.com/akiasprin/NodeGet-StatusShow",
   "dist_page": "https://nodeget.pages.dev",
   "user_preferences_form": {
     "version": "0.0.1",

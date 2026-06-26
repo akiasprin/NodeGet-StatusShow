@@ -8,7 +8,7 @@ import { ZipArchive } from 'archiver';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 // 输出文件路径
-const zipFilename = 'NodeGet-StatusShow.zip'
+const zipFilename = 'NodeGetBasicR2.zip'
 const zipTempPath = resolve(projectRoot, zipFilename)
 const zipDistPath = resolve(projectRoot, 'dist', zipFilename)
 
