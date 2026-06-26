@@ -35,13 +35,7 @@
         "type": "select",
         "default": "blue",
         "help": "选择默认主题色",
-        "options": [
-          {"label": "蓝色", "value": "blue"},
-          {"label": "紫色", "value": "purple"},
-          {"label": "黄油", "value": "butter"},
-          {"label": "绿色", "value": "green"},
-          {"label": "粉色", "value": "pink"}
-        ]
+        "options": "blue,purple,butter,green,pink"
       }
     ]
   },
