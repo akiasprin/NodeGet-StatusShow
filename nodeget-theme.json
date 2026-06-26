@@ -4,7 +4,7 @@
   "description": "NodeGetBasicR2 - updated status show theme",
   "author": "NodeSeekDev",
   "repository": "https://github.com/akiasprin/NodeGet-StatusShow",
-  "dist_page": "https://nodeget.pages.dev",
+  "dist_page": "https://nodeget-r2.pages.dev",
   "user_preferences_form": {
     "version": "0.0.1",
     "items": [
