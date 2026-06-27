@@ -181,7 +181,7 @@ interface SparkProps {
   dataKey: keyof HistorySample
   label: string
   stroke: string
-  domain?: [number, number]
+  domain?: [number | string, number | string]
   format: (v: number) => string
 }
 

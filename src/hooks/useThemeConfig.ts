@@ -14,7 +14,7 @@ export function useThemeConfig() {
       }
       fetch('nodeget-theme.json', { cache: 'no-cache' })
         .then(r => {
-          if (!r.ok) throw new Error(`config.json ${r.status}`)
+          if (!r.ok) throw new Error(`nodeget-theme.json ${r.status}`)
           return r.json() as Promise<ThemeConfig>
         })
         .then(c => alive && setConfig(c))

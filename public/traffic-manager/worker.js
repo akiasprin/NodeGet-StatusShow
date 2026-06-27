@@ -21,10 +21,12 @@ const info = m => log('info', m), warn = m => log('warn', m), errLog = m => log(
 
 async function kvSet(tok, ns, key, val) { await globalThis.nodeget('kv_set_value', { token: tok, namespace: ns, key, value: val }) }
 
-function addMonths(d, n) { const b = d.getDate(); d.setMonth(d.getMonth() + n); if (d.getDate() !== b) d.setDate(0); return d }
+// 与前端 traffic.ts 的 addMonths 保持一致：全程用 UTC 方法，
+// 避免 worker 运行在非 UTC 时区时月/日边界算错周期起点。
+function addMonths(d, n) { const b = d.getUTCDate(); d.setUTCMonth(d.getUTCMonth() + n); if (d.getUTCDate() !== b) d.setUTCDate(0); return d }
 function addPeriod(ds, p) {
   const d = new Date(ds + 'T00:00:00Z'), n = parseInt(p) || 1
-  return p.endsWith('y') ? addMonths(d, n * 12) : p.endsWith('m') ? addMonths(d, n) : (d.setDate(d.getDate() + n), d)
+  return p.endsWith('y') ? addMonths(d, n * 12) : p.endsWith('m') ? addMonths(d, n) : (d.setUTCDate(d.getUTCDate() + n), d)
 }
 function periodStart(ds, p) {
   if (!ds) ds = '1970-01-01'

@@ -7,12 +7,17 @@
     <link rel="icon" type="image/png" href="./logo.png" />
     <title>NodeGet Basic R2</title>
     <script>
+      // 预取配置：失败时让 promise reject（而非吞成 undefined），这样
+      // useUserConfig / useThemeConfig 的 .catch(setError) 才会触发报错，
+      // 避免 App 永远卡在"加载中"。单独挂的 .catch 仅做调试日志，并把
+      // promise 标记为已处理（消除 unhandled rejection 警告）；同一个 promise
+      // 的拒绝会触发所有挂载的 handler，所以 hook 自己的 .catch 照常触发。
       window.__config_p__ = fetch('config.json', { cache: 'no-cache' })
-        .then(function(res) { return res.ok ? res.json() : Promise.reject(res.status) })
-        .catch(function(e) { console.debug('config.json prefetch failed:', e) })
+        .then(function(res) { return res.ok ? res.json() : Promise.reject(new Error('config.json ' + res.status)) })
+      window.__config_p__.catch(function(e) { console.debug('config.json prefetch failed:', e) })
       window.__theme_p__ = fetch('nodeget-theme.json', { cache: 'no-cache' })
-        .then(function(res) { return res.ok ? res.json() : Promise.reject(res.status) })
-        .catch(function(e) { console.debug('nodeget-theme.json prefetch failed:', e) })
+        .then(function(res) { return res.ok ? res.json() : Promise.reject(new Error('nodeget-theme.json ' + res.status)) })
+      window.__theme_p__.catch(function(e) { console.debug('nodeget-theme.json prefetch failed:', e) })
     </script>
     <script>
       try {
