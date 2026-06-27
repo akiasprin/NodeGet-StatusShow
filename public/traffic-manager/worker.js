@@ -4,7 +4,7 @@
 // runtime: counter 回退 OR uptime 回退 → reboot → 累加 adjust
 
 const LOCK_TTL_MS = 120_000
-const V = 10
+const V = 11
 const FIELDS = ['total_received', 'total_transmitted', 'boot_time', 'uptime']
 
 function errMsg(e) { return e == null ? 'null error' : typeof e === 'string' ? e : (e.message || String(e)) }
@@ -21,7 +21,7 @@ const info = m => log('info', m), warn = m => log('warn', m), errLog = m => log(
 
 async function kvSet(tok, ns, key, val) { await globalThis.nodeget('kv_set_value', { token: tok, namespace: ns, key, value: val }) }
 
-function addMonths(d, n) { d.setMonth(d.getMonth() + n); if (d.getDate() !== new Date(d).getDate()) d.setDate(0); return d }
+function addMonths(d, n) { const b = d.getDate(); d.setMonth(d.getMonth() + n); if (d.getDate() !== b) d.setDate(0); return d }
 function addPeriod(ds, p) {
   const d = new Date(ds + 'T00:00:00Z'), n = parseInt(p) || 1
   return p.endsWith('y') ? addMonths(d, n * 12) : p.endsWith('m') ? addMonths(d, n) : (d.setDate(d.getDate() + n), d)
@@ -86,15 +86,18 @@ async function initState(token, uuid, periodMs, currentBoot, liveRx, liveTx) {
     const tag = isCurrent ? 'current' : 'closed'
 
     const searchFrom = i === 0 ? periodMs : chain[i - 1].endTs + 1
+    // 先查目标窗口，找不到则往前放宽 1 天（但不越过 periodMs）
     let first = await firstOfBootInRange(token, uuid, searchFrom, c.endTs, c.boot)
-
-    if (!first) {
+    if (!first && searchFrom > periodMs) {
       const fallbackFrom = Math.max(periodMs, searchFrom - 86400000)
-      first = await firstOfBootInRange(token, uuid, fallbackFrom, c.endTs, c.boot)
+      if (fallbackFrom < searchFrom) first = await firstOfBootInRange(token, uuid, fallbackFrom, c.endTs, c.boot)
     }
 
-    const frx = first ? first.rx : 0
-    const ftx = first ? first.tx : 0
+    // 当前 boot：如果 period 窗口内确实没有数据（监控延迟等），用 live 值兜底，
+    // 宁可少算也不要 fallback 到 0 导致显示全部历史流量。
+    // 已关闭的 boot：找不到 first 时用 0 兜底，该 boot 的 deltaRx 全计入 adjust。
+    const frx = first ? first.rx : (isCurrent ? c.endRx : 0)
+    const ftx = first ? first.tx : (isCurrent ? c.endTx : 0)
     const deltaRx = Math.max(0, c.endRx - frx)
     const deltaTx = Math.max(0, c.endTx - ftx)
 
@@ -153,7 +156,7 @@ async function run(params, env) {
         const periodChanged = oldPeriodStart !== newStart
         let reboot = false
 
-        if (!state || periodChanged) {
+        if (!state || state.v !== V || periodChanged) {
           const ia = await initState(token, uuid, newStartMs, bootTime, liveRx, liveTx)
           state = {
             v: V, adjust_rx: ia.adjustRx, adjust_tx: ia.adjustTx,

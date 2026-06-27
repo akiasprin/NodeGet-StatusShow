@@ -48,28 +48,44 @@ function parsePeriod(period?: string): { n: number; unit: 'd' | 'm' | 'y' } {
   return { n, unit: m[2].toLowerCase() as 'd' | 'm' | 'y' }
 }
 
+/**
+ * 安全地给日期加上 N 个月（UTC），防止月末溢出。
+ * 与 Worker 端 addMonths 逻辑一致：如果月份加法导致日期溢出（如 1月31日 +1月），回退到当月最后一天。
+ */
+function addMonths(d: Date, n: number): Date {
+  const before = d.getUTCDate()
+  d.setUTCMonth(d.getUTCMonth() + n)
+  if (d.getUTCDate() !== before) d.setUTCDate(0)
+  return d
+}
+
 /** 距流量重置的天数 */
 export function daysUntilReset(trafficStartDate: string, trafficPeriod?: string): number | null {
   if (!trafficStartDate) return null
+
+  // new Date("YYYY-MM-DD") 按 ES 规范解析为 UTC 午夜，无需拼接 "T00:00:00Z"
   const start = new Date(trafficStartDate)
   if (isNaN(start.getTime())) return null
-  const now = new Date()
+
+  const nowMs = Date.now()
   const { n, unit } = parsePeriod(trafficPeriod)
 
   // 找下一个重置时刻：从起始日期出发，每隔 n * unit 推进，直到超过 now
+  // 全程使用 UTC 方法，避免本地时区干扰月份/日期边界
   const next = new Date(start)
-  while (next <= now) {
+  let i = 0
+  while (next.getTime() <= nowMs && i < 1200) {
     if (unit === 'd') {
-      next.setDate(next.getDate() + n)
+      next.setUTCDate(next.getUTCDate() + n)
     } else if (unit === 'm') {
-      next.setMonth(next.getMonth() + n)
+      addMonths(next, n)
     } else {
-      next.setFullYear(next.getFullYear() + n)
+      addMonths(next, n * 12) // 年 = 月 × 12，复用月加法保护闰年溢出
     }
+    i++
   }
 
-  // 如果刚好落在今天（没到下一秒级别），视为今天重置
-  const diffMs = next.getTime() - now.getTime()
+  const diffMs = next.getTime() - nowMs
   const days = diffMs / (1000 * 60 * 60 * 24)
   if (days < 1) return 0
   return Math.ceil(days)
