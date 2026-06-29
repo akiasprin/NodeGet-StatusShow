@@ -75,6 +75,19 @@ export function buildLatencyChart(rows: TaskQueryResult[], type: LatencyType) {
   return { data, series }
 }
 
+/** 可见来源中发生丢包（success=false 或值缺失）的唯一时间戳，按时间升序 */
+export function lossTimestamps(rows: TaskQueryResult[], type: LatencyType, sources: string[]): number[] {
+  if (!sources.length) return []
+  const visible = new Set(sources)
+  const out = new Set<number>()
+  for (const r of rows) {
+    const src = r.cron_source || '未知'
+    if (!visible.has(src)) continue
+    if (pickValue(r, type) == null) out.add(normalizeTs(r.timestamp))
+  }
+  return [...out].sort((a, b) => a - b)
+}
+
 export interface LatencyStats {
   name: string
   color: string

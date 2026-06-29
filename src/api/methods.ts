@@ -1,4 +1,4 @@
-import type { RpcClient } from './client'
+import { httpRpcCall, type RpcClient } from './client'
 import type { DynamicSummary, StaticData, TaskQueryCondition, TaskQueryResult } from '../types'
 
 export const listAgentUuids = (c: RpcClient) =>
@@ -32,3 +32,18 @@ export const taskQuery = (
   conditions: TaskQueryCondition[],
   timeoutMs?: number,
 ) => c.call<TaskQueryResult[]>('task_query', { task_data_query: { condition: conditions } }, timeoutMs)
+
+/** HTTP 全量查询 — 浏览器自动 gzip，适合大窗口（如 24h 首次拉取） */
+export const taskQueryHttp = (
+  wsUrl: string,
+  token: string,
+  conditions: TaskQueryCondition[],
+  timeoutMs?: number,
+) => httpRpcCall<TaskQueryResult[]>(
+  wsUrl,
+  token,
+  'task_query',
+  { task_data_query: { condition: conditions } },
+  timeoutMs,
+)
+

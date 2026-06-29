@@ -4,6 +4,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -18,6 +19,7 @@ import { cn } from '../utils/cn'
 import {
   buildLatencyChart,
   computeLatencyStats,
+  lossTimestamps,
   type LatencyStats,
 } from '../utils/latency'
 import { useNodeLatency } from '../hooks/useNodeLatency'
@@ -249,7 +251,11 @@ function LatencyBlock({ title, rows, type, loading }: LatencyBlockProps) {
   const [hidden, setHidden] = useState<Set<string>>(() => new Set())
   const empty = data.length === 0
 
-  const visibleSeries = series.filter(s => !hidden.has(s.name))
+  const visibleSeries = useMemo(() => series.filter(s => !hidden.has(s.name)), [series, hidden])
+  const lossTs = useMemo(
+    () => lossTimestamps(rows, type, visibleSeries.map(s => s.name)),
+    [rows, type, visibleSeries],
+  )
 
   const toggle = (name: string) =>
     setHidden(prev => {
@@ -308,6 +314,15 @@ function LatencyBlock({ title, rows, type, loading }: LatencyBlockProps) {
                 labelFormatter={t => new Date(Number(t)).toLocaleTimeString()}
                 formatter={(v: number) => ms(Number(v))}
               />
+              {lossTs.map(t => (
+                <ReferenceLine
+                  key={`loss-${t}`}
+                  x={t}
+                  stroke="hsl(var(--muted-foreground))"
+                  strokeOpacity={0.35}
+                  strokeWidth={1}
+                />
+              ))}
               {visibleSeries.map(s => (
                 <Line
                   key={s.name}
