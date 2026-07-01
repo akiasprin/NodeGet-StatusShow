@@ -35,12 +35,24 @@ export function useNodeLatency(
 ) {
   const [pingData, setPingData] = useState<TaskQueryResult[]>([])
   const [tcpData, setTcpData] = useState<TaskQueryResult[]>([])
-  const [loading, setLoading] = useState(false)
+  // 初始即按是否有节点置位，避免首帧 loading=false 且数据为空时误显“暂无数据”
+  const [loading, setLoading] = useState(() => !!(pool && source && uuid))
 
-  useEffect(() => {
+  // 切换节点时同步复位：渲染期间即清空旧数据并进入加载态，
+  // 否则 effect 在渲染后才执行，切换瞬间会闪现上一节点的延迟曲线或“暂无数据”
+  const [prev, setPrev] = useState<{
+    pool: BackendPool | null
+    source: string | null
+    uuid: string | null
+  }>({ pool: null, source: null, uuid: null })
+  if (prev.pool !== pool || prev.source !== source || prev.uuid !== uuid) {
+    setPrev({ pool, source, uuid })
     setPingData([])
     setTcpData([])
+    setLoading(!!(pool && source && uuid))
+  }
 
+  useEffect(() => {
     if (!pool || !source || !uuid) return
     const entry = pool.entries.find(e => e.name === source)
     if (!entry) return

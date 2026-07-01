@@ -1,10 +1,9 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { X } from 'lucide-react'
+import * as echarts from 'echarts'
 import {
-  CartesianGrid,
   Line,
   LineChart,
-  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -19,7 +18,10 @@ import { cn } from '../utils/cn'
 import {
   buildLatencyChart,
   computeLatencyStats,
+  latencyColorsUnified,
   lossTimestamps,
+  type ChartPoint,
+  type ChartSeries,
   type LatencyStats,
 } from '../utils/latency'
 import { useNodeLatency } from '../hooks/useNodeLatency'
@@ -47,6 +49,8 @@ export function InlineNodeDetail({ node, onClose, showSource, pool, variant = 'c
     node.source,
     node.uuid,
   )
+  // TCP Ping 与 Ping 共用一套配色（以 TCP Ping 为标准，1 对 1 匹配的 Ping 复制 TCP 颜色）
+  const latencyColors = useMemo(() => latencyColorsUnified(pingData, tcpData), [pingData, tcpData])
 
   const u = deriveUsage(node)
   const d = node.dynamic
@@ -95,8 +99,8 @@ export function InlineNodeDetail({ node, onClose, showSource, pool, variant = 'c
           })()}
 
           {/* 延迟图表 */}
-          <LatencyBlock title="TCP Ping" rows={tcpData} type="tcp_ping" loading={latencyLoading} />
-          <LatencyBlock title="Ping" rows={pingData} type="ping" loading={latencyLoading} />
+          <LatencyBlock title="TCP Ping" rows={tcpData} type="tcp_ping" loading={latencyLoading} colors={latencyColors} />
+          <LatencyBlock title="Ping" rows={pingData} type="ping" loading={latencyLoading} colors={latencyColors} />
 
           {/* 系统信息 */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
@@ -219,6 +223,7 @@ function Spark({ data, dataKey, label, stroke, domain, format }: SparkProps) {
               strokeOpacity={0.18}
               strokeLinecap="round"
               strokeLinejoin="round"
+              tooltipType="none"
             />
             <Line
               {...lineProps}
@@ -241,14 +246,202 @@ interface LatencyBlockProps {
   rows: TaskQueryResult[]
   type: LatencyType
   loading: boolean
+  colors: Map<string, string>
 }
 
 const ms = (v: number) => `${v.toFixed(1)} ms`
 
-function LatencyBlock({ title, rows, type, loading }: LatencyBlockProps) {
-  const { data, series } = useMemo(() => buildLatencyChart(rows, type), [rows, type])
-  const stats = useMemo(() => computeLatencyStats(rows, type), [rows, type])
+/** 通过 getComputedStyle 读取的 shadcn 颜色变量，已包成 Canvas 可解析的 hsl() 字符串 */
+interface ChartColors {
+  border: string
+  popover: string
+  mutedFg: string
+  foreground: string
+  /** 丢包条纹不透明度：暗背景下浅灰条纹更显眼，暗模式调低以收敛视觉 */
+  lossOpacity: number
+}
+
+/** 当前是否暗模式（shadcn 用 documentElement 的 .dark 类切换） */
+const isDarkMode = (): boolean => document.documentElement.classList.contains('dark')
+
+/** 读取 shadcn CSS 变量（原始 HSL 数值，如 "220 18% 88%"）并包成 hsl(r, g%, b%) */
+function resolveHslVar(name: string): string {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  const parts = raw.split(/\s+/)
+  if (parts.length >= 3) return `hsl(${parts[0]}, ${parts[1]}, ${parts[2]})`
+  return 'hsl(0, 0%, 50%)'
+}
+
+const toLatencyPoint = (pt: ChartPoint, name: string): [number, number | null] => [
+  pt.t,
+  pt[name] == null ? null : pt[name],
+]
+
+/** 相邻丢包间隔阈值：≤此值视为连续丢包段，合并成区间带，避免半透明竖线在同一像素列叠加出“光影” */
+const LOSS_MERGE_GAP_MS = 30_000
+
+/** 把丢包时间戳合并为区间：连续丢包（间隔 ≤ 阈值）合成 [start,end] 段，离散单点为 [t,t] */
+function mergeLossRanges(ts: number[]): Array<[number, number]> {
+  if (!ts.length) return []
+  const ranges: Array<[number, number]> = []
+  let start = ts[0]
+  let end = ts[0]
+  for (let i = 1; i < ts.length; i++) {
+    if (ts[i] - end <= LOSS_MERGE_GAP_MS) end = ts[i]
+    else {
+      ranges.push([start, end])
+      start = ts[i]
+      end = ts[i]
+    }
+  }
+  ranges.push([start, end])
+  return ranges
+}
+
+/** 构建 echarts 配置：复刻 recharts 的网格 / 轴 / tooltip / 丢包竖线 / 发光折线 */
+function buildLatencyOption(
+  data: ChartPoint[],
+  series: ChartSeries[],
+  lossTs: number[],
+  vars: ChartColors,
+): echarts.EChartsOption {
+  if (!data.length) return { animation: false }
+
+  const dataMin = data[0].t
+  const dataMax = data[data.length - 1].t
+
+  // Y 轴取数据极值（对应 recharts domain=['auto','auto']），并显式锁定区间，
+  // 这样丢包竖线用 [yMin,yMax] 作端点即可贯穿整图高度（等价 recharts ReferenceLine）。
+  let yMin = Infinity
+  let yMax = -Infinity
+  for (const pt of data) {
+    for (const s of series) {
+      const v = pt[s.name]
+      if (v == null) continue
+      if (v < yMin) yMin = v
+      if (v > yMax) yMax = v
+    }
+  }
+  if (!isFinite(yMin) || !isFinite(yMax)) {
+    yMin = 0
+    yMax = 1
+  } else if (yMax - yMin < 1) {
+    // 平直数据给一点呼吸空间，避免轴线压成一条
+    yMin -= 1
+    yMax += 1
+  }
+
+  // 丢包：连续段合并成 markArea 带（单次绘制、半透明均匀，不叠加），
+  // 离散单点保留 markLine 竖线（孤立不叠加）。两者颜色一致，视觉统一。
+  const lossRanges = lossTs.length ? mergeLossRanges(lossTs) : []
+  const lossPoints = lossRanges.filter(r => r[0] === r[1]).map(r => r[0])
+  const lossSegments = lossRanges.filter(r => r[0] !== r[1])
+
+  const seriesOpts: echarts.LineSeriesOption[] = series.map((s, idx) => ({
+    name: s.name,
+    type: 'line',
+    // 顶层 color 供 tooltip/legend 取色，保证与线条颜色一致
+    color: s.color,
+    itemStyle: { color: s.color },
+    showSymbol: false,
+    connectNulls: true,
+    smooth: false,
+    // 近似 recharts 的 feGaussianBlur(stdDeviation=1.5)+feMerge 发光，强度减弱
+    lineStyle: { width: 1, color: s.color, shadowBlur: 2, shadowColor: s.color },
+    data: data.map(pt => toLatencyPoint(pt, s.name)),
+    markLine:
+      idx === 0 && lossPoints.length > 0
+        ? {
+            symbol: 'none',
+            silent: true,
+            label: { show: false },
+            lineStyle: { color: vars.mutedFg, opacity: vars.lossOpacity, width: 1, type: 'solid' },
+            data: lossPoints.map(t => [{ coord: [t, yMin] }, { coord: [t, yMax] }]),
+          }
+        : undefined,
+    markArea:
+      idx === 0 && lossSegments.length > 0
+        ? {
+            silent: true,
+            label: { show: false },
+            itemStyle: { color: vars.mutedFg, opacity: vars.lossOpacity },
+            data: lossSegments.map(r => [{ coord: [r[0], yMin] }, { coord: [r[1], yMax] }]),
+          }
+        : undefined,
+  }))
+
+  return {
+    animation: false,
+    grid: { top: 4, right: 4, bottom: 26, left: 44 },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: vars.popover,
+      borderColor: vars.border,
+      borderWidth: 1,
+      borderRadius: 6,
+      padding: 10,
+      textStyle: { fontSize: 11, color: vars.foreground },
+      // 光标竖线，对应 recharts 默认 cursor '#ccc'
+      axisPointer: { type: 'line', lineStyle: { color: '#ccc', width: 1 }, label: { show: false } },
+      // 复刻 recharts DefaultTooltipContent 的 DOM 结构与样式
+      formatter: params => {
+        const arr = Array.isArray(params) ? params : [params]
+        if (!arr.length) return ''
+        const firstVal = arr[0].value
+        const tRaw = Array.isArray(firstVal) ? firstVal[0] : null
+        const t = typeof tRaw === 'number' ? tRaw : 0
+        let html = `<p style="margin:0">${new Date(t).toLocaleTimeString()}</p>`
+        html += '<ul style="padding:0;margin:0;list-style:none">'
+        for (const p of arr) {
+          const raw = p.value
+          const v = Array.isArray(raw) ? raw[1] : null
+          const valStr = typeof v === 'number' ? `${v.toFixed(1)} ms` : '—'
+          html += `<li style="display:block;padding-top:4px;padding-bottom:4px;color:${p.color}">`
+          html += `<span>${p.seriesName}</span><span> : </span><span>${valStr}</span>`
+          html += '</li>'
+        }
+        html += '</ul>'
+        return html
+      },
+    },
+    xAxis: {
+      type: 'time',
+      min: dataMin,
+      max: dataMax,
+      axisLine: { lineStyle: { color: vars.border, width: 0.5 } },
+      axisTick: { show: false },
+      axisLabel: {
+        fontSize: 10,
+        color: '#888',
+        hideOverlap: true,
+        formatter: value => new Date(value).toLocaleTimeString(),
+      },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      min: yMin,
+      max: yMax,
+      splitNumber: 5,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        fontSize: 10,
+        color: '#888',
+        formatter: value => `${Math.round(value)}ms`,
+      },
+      // 不画水平网格线
+      splitLine: { show: false },
+    },
+    series: seriesOpts,
+  }
+}
+
+function LatencyBlock({ title, rows, type, loading, colors }: LatencyBlockProps) {
+  const { data, series } = useMemo(() => buildLatencyChart(rows, type, colors), [rows, type, colors])
+  const stats = useMemo(() => computeLatencyStats(rows, type, colors), [rows, type, colors])
   const [hidden, setHidden] = useState<Set<string>>(() => new Set())
+  const [themeTick, setThemeTick] = useState(0)
   const empty = data.length === 0
 
   const visibleSeries = useMemo(() => series.filter(s => !hidden.has(s.name)), [series, hidden])
@@ -256,6 +449,9 @@ function LatencyBlock({ title, rows, type, loading }: LatencyBlockProps) {
     () => lossTimestamps(rows, type, visibleSeries.map(s => s.name)),
     [rows, type, visibleSeries],
   )
+
+  const hostRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<echarts.ECharts | null>(null)
 
   const toggle = (name: string) =>
     setHidden(prev => {
@@ -265,79 +461,73 @@ function LatencyBlock({ title, rows, type, loading }: LatencyBlockProps) {
       return next
     })
 
+  // 数据清空（切换节点 / 重载）时复位：清掉上一节点残留的隐藏态，并允许重新套用默认隐藏
+  // 丢包率 100% 的来源默认隐藏——它们 24h 全部缺失，画出来只会贡献海量丢包竖线且无有效曲线
+  const defaultsApplied = useRef(false)
+  useEffect(() => {
+    if (!stats.length) {
+      defaultsApplied.current = false
+      setHidden(prev => (prev.size ? new Set() : prev))
+      return
+    }
+    if (defaultsApplied.current) return
+    defaultsApplied.current = true
+    const fullLoss = stats.filter(s => s.lossRate >= 100).map(s => s.name)
+    if (fullLoss.length) {
+      setHidden(prev => {
+        const next = new Set(prev)
+        for (const name of fullLoss) next.add(name)
+        return next
+      })
+    }
+  }, [stats])
+
+  // 初始化 echarts 实例 + 自适应 + 卸载清理
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const chart = echarts.init(host)
+    chartRef.current = chart
+    const ro = new ResizeObserver(() => chart.resize())
+    ro.observe(host)
+    return () => {
+      ro.disconnect()
+      chart.dispose()
+      chartRef.current = null
+    }
+  }, [])
+
+  // 亮/暗主题切换时重读 CSS 变量并重绘
+  useEffect(() => {
+    const mo = new MutationObserver(() => setThemeTick(v => v + 1))
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => mo.disconnect()
+  }, [])
+
+  // 数据 / 可见序列 / 主题变化时刷新图表
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart || empty) return
+    const vars: ChartColors = {
+      border: resolveHslVar('--border'),
+      popover: resolveHslVar('--popover'),
+      mutedFg: resolveHslVar('--muted-foreground'),
+      foreground: resolveHslVar('--foreground'),
+      // 暗模式下 muted-foreground 是浅灰，半透明叠在深底上偏显眼，降低不透明度
+      lossOpacity: isDarkMode() ? 0.18 : 0.35,
+    }
+    chart.setOption(buildLatencyOption(data, visibleSeries, lossTs, vars), true)
+  }, [data, visibleSeries, lossTs, empty, themeTick])
+
   return (
     <Section title={`${title} · 近 24 小时`}>
       <div className="relative h-60">
+        {/* 宿主常驻：echarts 实例在挂载时初始化一次，若按 empty 条件挂载会导致数据到达时仍空白 */}
+        <div ref={hostRef} className={cn('h-full w-full', empty && 'opacity-0')} />
         {empty && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
             {loading ? '加载中…' : `暂无 ${type} 数据`}
           </div>
-        )}
-        {!empty && (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data} margin={{ top: 4, right: 4, left: -8, bottom: -4 }}>
-              <defs>
-                <filter id="latency-glow" x="-10%" y="-10%" width="120%" height="120%">
-                  <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="blur" />
-                  <feMerge>
-                    <feMergeNode in="blur" />
-                    <feMergeNode in="SourceGraphic" />
-                  </feMerge>
-                </filter>
-              </defs>
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="hsl(var(--border))"
-                strokeWidth={0.5}
-                vertical={false}
-              />
-              <XAxis
-                dataKey="t"
-                type="number"
-                domain={['dataMin', 'dataMax']}
-                scale="time"
-                tickFormatter={t => new Date(t).toLocaleTimeString()}
-                tick={{ fontSize: 10, fill: '#888' }}
-                axisLine={{ stroke: 'hsl(var(--border))', strokeWidth: 0.5 }}
-                tickLine={false}
-              />
-              <YAxis
-                tickFormatter={v => `${Math.round(v)}ms`}
-                tick={{ fontSize: 10, fill: '#888' }}
-                axisLine={false}
-                tickLine={false}
-                width={52}
-                domain={['auto', 'auto']}
-              />
-              <Tooltip
-                contentStyle={TOOLTIP_STYLE}
-                labelFormatter={t => new Date(Number(t)).toLocaleTimeString()}
-                formatter={(v: number) => ms(Number(v))}
-              />
-              {lossTs.map(t => (
-                <ReferenceLine
-                  key={`loss-${t}`}
-                  x={t}
-                  stroke="hsl(var(--muted-foreground))"
-                  strokeOpacity={0.35}
-                  strokeWidth={1}
-                />
-              ))}
-              {visibleSeries.map(s => (
-                <Line
-                  key={s.name}
-                  type="monotone"
-                  dataKey={s.name}
-                  stroke={s.color}
-                  strokeWidth={1}
-                  dot={false}
-                  connectNulls
-                  isAnimationActive={false}
-                  filter="url(#latency-glow)"
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
         )}
         {!empty && loading && (
           <div className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
